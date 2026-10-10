@@ -1,8 +1,10 @@
-from typing import Any, TypedDict, Annotated
-from langgraph.graph import StateGraph
-from langgraph.graph.message import add_messages
-from models import UserMessageTypeModel, EvaluatorOutput
+from typing import Annotated, Any, TypedDict
+
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+
+from guardrails import ModerationResult
+from models import EvaluatorOutput, UserMessageTypeModel
 
 
 class SidekickState(TypedDict):
@@ -10,3 +12,4 @@ class SidekickState(TypedDict):
     todos: Annotated[list[dict[str, Any]], add_messages]
     message_type: UserMessageTypeModel | None
     evaluation_result: EvaluatorOutput | None
+    moderation_result: ModerationResult | None

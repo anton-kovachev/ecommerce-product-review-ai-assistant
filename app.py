@@ -44,7 +44,7 @@ async def process_message(sidekick, message, success_criteria, history):
         sidekick is None
     ):  # the user clicked before setup finished bringing up the MCP servers
         return history, gr.update(visible=False), sidekick
-    results = await sidekick.arun_turn(message, success_criteria, history)
+    results = await sidekick.arun_turn(message)
     return results, gr.update(visible=sidekick.paused), sidekick
 
 

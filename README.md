@@ -37,7 +37,7 @@ The goal of Sidekick is to automate the quality assurance and research process f
 
 2. **Install dependencies**:
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
 3. **Configure Environment**:
@@ -48,7 +48,7 @@ The goal of Sidekick is to automate the quality assurance and research process f
 
 4. **Run the Agent**:
    ```bash
-   python sidekick.py
+   uv run sidekick.py
    ```
 
 ## 🗺️ Workflow Architecture

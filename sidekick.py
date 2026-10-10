@@ -32,11 +32,18 @@ from product_researcher import ProductResearcher
 from product_review_evaluator import ProductReviewEvaluator
 from message_type_analyzer import MessageTypeAnalyzer
 from feedback_sentiment_analyzer import FeedbackSentimentAnalyzer
+from guardrails import GuardrailsManager, ModerationResult
+import json
 
 
 class NodeNames(str, Enum):
+    START = ("START",)
+    END = ("END",)
+    MESSAGE_INPUT_MODERATION_ANALYSIS = "message_input_moderation_analysis"
+    MESSAGE_INPUT_MODERATED = "message_input_moderated"
     MESSAGE_TYPE_ANALYSIS = "message_type_analysis"
     PROCESS_PRODUCT_QUERY = "process_product_query"
+    PROCESS_MODERATED_PRODUCT_QUERY = "process_moderated_product_query"
     PROCESS_FEEDBACK = "process_feedback"
     PROCESS_UNKNOWN = "process_unknown"
     EVALUATE_PRODUCT_REVIEW = "evaluate_product_review"
@@ -66,9 +73,11 @@ class Sidekick:
             "todos": [],
             "message_type": None,
             "evaluation_result": None,
+            "moderation_result": None,
         }
         self.memory: InMemorySaver = InMemorySaver()
         self.model: BaseChatModel | ChatOpenAI
+        self.guardrails_manager: GuardrailsManager
         self.message_type_analyzer: MessageTypeAnalyzer
         self.product_researcher: ProductResearcher
         self.product_review_evaluator: ProductReviewEvaluator
@@ -83,6 +92,7 @@ class Sidekick:
         # Setup logic for the Sidekick instance
         self._setup_model()
         await self._setup_tools()
+        self.guardrails_manager = GuardrailsManager(self.model)
         self.message_type_analyzer = MessageTypeAnalyzer(self.model)
         self.product_researcher = ProductResearcher(
             self.model, self.tools, self.backend, self.memory
@@ -109,11 +119,27 @@ class Sidekick:
             if isinstance(value, str):
                 return EvaluatorOutput.model_validate_json(value)
             return EvaluatorOutput.model_validate(value)
-        except (ValidationError, TypeError, ValueError):
+        except ValidationError, TypeError, ValueError:
             return None
 
+    async def _node_moderate_message_input(
+        self, state: SidekickState
+    ) -> dict[str, Any]:
+        print(f"Moderate message input {state["messages"][-1]}")
+        validation_result = await self.guardrails_manager.validate_input(
+            str(state["messages"][-1].content)
+        )
+        moderation_result: ModerationResult = validation_result["moderation"]
+        if not validation_result["is_valid"] and moderation_result.is_safe:
+            moderation_result = ModerationResult(
+                is_safe=False,
+                reason="; ".join(validation_result["issues"]),
+                category="input_validation",
+            )
+        return {"moderation_result": moderation_result}
+
     async def _node_define_message_type(self, state: SidekickState) -> dict[str, Any]:
-        print(f"Analyze mesaage type {state["messages"][-1]}")
+        print(f"Analyze message type {state["messages"][-1]}")
 
         message_type_query = {
             "messages": [
@@ -150,6 +176,22 @@ class Sidekick:
         print(f"Agent Response {agent_response["structured_response"]}")
         return {"message_type": agent_response["structured_response"]}
 
+    async def _node_process_moderated_input(
+        self, state: SidekickState
+    ) -> dict[str, Any]:
+        moderation_result: ModerationResult = state.get("moderation_result", None)
+
+        if moderation_result is not None and not moderation_result.is_safe:
+            return {
+                "messages": [
+                    AIMessage(
+                        content=f"You query is not safe due to the following reason {moderation_result.reason}"
+                    )
+                ]
+            }
+        else:
+            return {"messages": [AIMessage(content="Sorry, something went wrong.")]}
+
     async def _node_process_product_query(self, state: SidekickState) -> dict[str, Any]:
         if self.product_researcher is None:
             raise ValueError(
@@ -184,9 +226,7 @@ class Sidekick:
             ]
         )
         async for result in self.product_researcher.research(
-            {"messages": product_query},
-            config=config,
-            stream_mode="values",
+            {"messages": product_query}, config=config
         ):
             self.todos = result.get("todos", self.todos)
 
@@ -279,10 +319,40 @@ class Sidekick:
             "evaluation_result": evaluation_result,
         }
 
+    def _router_validation_result(
+        self, state: SidekickState
+    ) -> Literal[NodeNames.PROCESS_PRODUCT_QUERY, NodeNames.END]:
+        validation_result = state.get("moderation_result", None)
+        if validation_result is None:
+            return NodeNames.PROCESS_PRODUCT_QUERY
+
+        return (
+            NodeNames.END
+            if validation_result.is_safe
+            else NodeNames.PROCESS_PRODUCT_QUERY
+        )
+
+    def _router_moderation_result(
+        self, state: SidekickState
+    ) -> Literal[NodeNames.PROCESS_PRODUCT_QUERY, NodeNames.MESSAGE_INPUT_MODERATED]:
+        moderation_result = state.get("moderation_result", None)
+        if moderation_result is None:
+            return NodeNames.PROCESS_PRODUCT_QUERY
+
+        return (
+            NodeNames.MESSAGE_INPUT_MODERATED
+            if not moderation_result.is_safe
+            else NodeNames.PROCESS_PRODUCT_QUERY
+        )
+
     def _router_message_type(
         self,
         state: SidekickState,
-    ) -> Literal["process_product_query", "process_feedback", "process_unknown"]:
+    ) -> Literal[
+        NodeNames.PROCESS_PRODUCT_QUERY,
+        NodeNames.PROCESS_FEEDBACK,
+        NodeNames.PROCESS_UNKNOWN,
+    ]:
         message_type_model = state.get("message_type")
         message_type = message_type_model.category if message_type_model else "unknown"
         if message_type == "product_query":
@@ -295,18 +365,25 @@ class Sidekick:
     def _router_evaluation(
         self,
         state: SidekickState,
-    ) -> Literal["process_product_query", "END"]:
+    ) -> Literal[NodeNames.PROCESS_PRODUCT_QUERY, NodeNames.END]:
         evaluation_result = self._parse_evaluator_output(state.get("evaluation_result"))
         if evaluation_result is None:
             return NodeNames.PROCESS_PRODUCT_QUERY
 
-        return "END" if evaluation_result.verdict else NodeNames.PROCESS_PRODUCT_QUERY
+        return (
+            NodeNames.END
+            if evaluation_result.verdict
+            else NodeNames.PROCESS_PRODUCT_QUERY
+        )
 
     async def arun_turn(
         self,
-        state: SidekickState,
+        message: str,
     ) -> dict[str, Any]:
-        return await self._node_process_product_query(state)
+        config = RunnableConfig(configurable={"thread_id": self.sidekick_id})
+        return await self.graph.ainvoke(
+            {"messages": [HumanMessage(content=message)]}, config=config
+        )
 
     def _build_sidekick_graph(self) -> CompiledStateGraph:
         if self.message_type_analyzer is None:
@@ -317,6 +394,13 @@ class Sidekick:
         sidekick_builder = StateGraph(SidekickState)
 
         # Nodes
+        sidekick_builder.add_node(
+            NodeNames.MESSAGE_INPUT_MODERATION_ANALYSIS,
+            self._node_moderate_message_input,
+        )
+        sidekick_builder.add_node(
+            NodeNames.MESSAGE_INPUT_MODERATED, self._node_process_moderated_input
+        )
         sidekick_builder.add_node(
             NodeNames.MESSAGE_TYPE_ANALYSIS, self._node_define_message_type
         )
@@ -343,7 +427,16 @@ class Sidekick:
         )
 
         # Edges
-        sidekick_builder.add_edge(START, NodeNames.MESSAGE_TYPE_ANALYSIS)
+        sidekick_builder.add_edge(START, NodeNames.MESSAGE_INPUT_MODERATION_ANALYSIS)
+        sidekick_builder.add_conditional_edges(
+            NodeNames.MESSAGE_INPUT_MODERATION_ANALYSIS,
+            self._router_moderation_result,
+            {
+                NodeNames.MESSAGE_INPUT_MODERATED: NodeNames.MESSAGE_INPUT_MODERATED,
+                NodeNames.PROCESS_PRODUCT_QUERY: NodeNames.MESSAGE_TYPE_ANALYSIS,
+            },
+        )
+
         sidekick_builder.add_conditional_edges(
             NodeNames.MESSAGE_TYPE_ANALYSIS, self._router_message_type
         )
@@ -362,7 +455,7 @@ class Sidekick:
             },
         )
 
-        return sidekick_builder.compile()
+        return sidekick_builder.compile(checkpointer=self.memory)
 
     def _setup_model(self):
         self.model = ChatOpenAI(

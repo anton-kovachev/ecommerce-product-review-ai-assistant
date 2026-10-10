@@ -1,0 +1,24 @@
+[project]
+name = "ecommerce-product-review-ai-assistant"
+version = "0.1.0"
+description = "AI assistant for product research and review evaluation"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anyio",
+    "deepagents",
+    "gradio",
+    "langchain",
+    "langchain-community",
+    "langchain-core",
+    "langchain-mcp-adapters",
+    "langchain-openai",
+    "langgraph",
+    "paramiko",
+    "pydantic",
+    "python-dotenv",
+    "requests"
+]
+
+[tool.uv]
+package = false
