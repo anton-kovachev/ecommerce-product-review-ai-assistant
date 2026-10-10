@@ -16,7 +16,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from middleware import AsyncToolCallLogger, TolerateToolErrors
-from models import EvaluatorOutput, UserMessageTypeModel, FeedbackSentimentOutput
+from models import (
+    EvaluatorOutput,
+    UserMessageTypeModel,
+    FeedbackSentimentOutput,
+    ValidationResult,
+)
 from pydantic import ValidationError
 from prompts import (
     PRODUCT_RESEARCHER_PROMPT,
@@ -32,7 +37,7 @@ from product_researcher import ProductResearcher
 from product_review_evaluator import ProductReviewEvaluator
 from message_type_analyzer import MessageTypeAnalyzer
 from feedback_sentiment_analyzer import FeedbackSentimentAnalyzer
-from guardrails import GuardrailsManager, ModerationResult
+from guardrails import GuardrailsManager
 import json
 
 
@@ -73,7 +78,7 @@ class Sidekick:
             "todos": [],
             "message_type": None,
             "evaluation_result": None,
-            "moderation_result": None,
+            "validation_result": None,
         }
         self.memory: InMemorySaver = InMemorySaver()
         self.model: BaseChatModel | ChatOpenAI
@@ -129,14 +134,7 @@ class Sidekick:
         validation_result = await self.guardrails_manager.validate_input(
             str(state["messages"][-1].content)
         )
-        moderation_result: ModerationResult = validation_result["moderation"]
-        if not validation_result["is_valid"] and moderation_result.is_safe:
-            moderation_result = ModerationResult(
-                is_safe=False,
-                reason="; ".join(validation_result["issues"]),
-                category="input_validation",
-            )
-        return {"moderation_result": moderation_result}
+        return {"validation_result": validation_result}
 
     async def _node_define_message_type(self, state: SidekickState) -> dict[str, Any]:
         print(f"Analyze message type {state["messages"][-1]}")
@@ -179,13 +177,15 @@ class Sidekick:
     async def _node_process_moderated_input(
         self, state: SidekickState
     ) -> dict[str, Any]:
-        moderation_result: ModerationResult = state.get("moderation_result", None)
+        validation_result: ValidationResult | None = state.get(
+            "validation_result", None
+        )
 
-        if moderation_result is not None and not moderation_result.is_safe:
+        if validation_result is not None and not validation_result.is_valid:
             return {
                 "messages": [
                     AIMessage(
-                        content=f"You query is not safe due to the following reason {moderation_result.reason}"
+                        content=f"You query is not safe due to the following reason {', '.join(validation_result.issues)}"
                     )
                 ]
             }
@@ -319,31 +319,14 @@ class Sidekick:
             "evaluation_result": evaluation_result,
         }
 
-    def _router_validation_result(
-        self, state: SidekickState
-    ) -> Literal[NodeNames.PROCESS_PRODUCT_QUERY, NodeNames.END]:
-        validation_result = state.get("moderation_result", None)
-        if validation_result is None:
-            return NodeNames.PROCESS_PRODUCT_QUERY
-
-        return (
-            NodeNames.END
-            if validation_result.is_safe
-            else NodeNames.PROCESS_PRODUCT_QUERY
-        )
-
     def _router_moderation_result(
         self, state: SidekickState
     ) -> Literal[NodeNames.PROCESS_PRODUCT_QUERY, NodeNames.MESSAGE_INPUT_MODERATED]:
-        moderation_result = state.get("moderation_result", None)
-        if moderation_result is None:
+        validation_result = state.get("validation_result")
+        if validation_result is None or validation_result.is_valid:
             return NodeNames.PROCESS_PRODUCT_QUERY
 
-        return (
-            NodeNames.MESSAGE_INPUT_MODERATED
-            if not moderation_result.is_safe
-            else NodeNames.PROCESS_PRODUCT_QUERY
-        )
+        return NodeNames.MESSAGE_INPUT_MODERATED
 
     def _router_message_type(
         self,

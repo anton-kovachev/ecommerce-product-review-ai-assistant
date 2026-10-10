@@ -18,6 +18,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from models import ValidationResult
+
 load_dotenv(override=True)
 
 # Patterns for detecting sensitive information
@@ -196,7 +198,7 @@ class GuardrailsManager:
             "max_tokens": self.max_tokens,
         }
 
-    async def validate_input(self, user_message: str) -> dict[str, Any]:
+    async def validate_input(self, user_message: str) -> ValidationResult:
         """
         Comprehensive validation of user input.
 
@@ -206,7 +208,7 @@ class GuardrailsManager:
             user_message: The user's input message
 
         Returns:
-            Dict with 'is_valid' (bool), 'issues' (list), and 'moderation' (ModerationResult)
+            ValidationResult with the validation status and any issues.
         """
         issues = []
 
@@ -229,8 +231,11 @@ class GuardrailsManager:
         if not moderation.is_safe:
             issues.append(f"❌ Content flagged: {moderation.reason}")
 
-        return {
-            "is_valid": moderation.is_safe and token_check["within_limit"],
-            "issues": issues,
-            "moderation": moderation,
-        }
+        return ValidationResult(
+            is_valid=(
+                moderation.is_safe
+                and token_check["within_limit"]
+                and not sensitive_check["found"]
+            ),
+            issues=issues,
+        )

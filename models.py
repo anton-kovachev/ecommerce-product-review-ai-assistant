@@ -27,3 +27,8 @@ class FeedbackSentimentOutput(BaseModel):
         description="The confidence level of the sentiment analysis (1-10).",
     )
     content: str = Field(description="The text content of the feedback.")
+
+
+class ValidationResult(BaseModel):
+    is_valid: bool = Field(description="Indicates if the input passed validation")
+    issues: list[str] = Field(description="List of issues found during validation")
