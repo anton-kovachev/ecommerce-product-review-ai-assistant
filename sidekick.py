@@ -265,7 +265,17 @@ class Sidekick:
             str(response["messages"][-1].content)
         )
 
-        return {"messages": [AIMessage(content=structured_response.sentiment)]}
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Thank your for your feedback, do you want me to help with anything else?"
+                        if structured_response.sentiment == "positive"
+                        else "I'm sorry to hear that. Could you please provide more details on what went wrong?"
+                    )
+                )
+            ]
+        }
 
     async def _node_process_evaluate_product_review(
         self,
