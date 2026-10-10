@@ -37,7 +37,7 @@ class ProductResearcher:
 
     async def research(self, query, config=None):
         async for result in self.agent.astream(
-            {"messages": query},
+            query,
             config=config,
             stream_mode="values",
         ):

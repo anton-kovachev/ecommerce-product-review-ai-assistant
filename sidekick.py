@@ -362,11 +362,33 @@ class Sidekick:
     async def arun_turn(
         self,
         message: str,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         config = RunnableConfig(configurable={"thread_id": self.sidekick_id})
-        return await self.graph.ainvoke(
-            {"messages": [HumanMessage(content=message)]}, config=config
+        result = await self.graph.ainvoke(
+            {"messages": [HumanMessage(content=message)]},
+            config=config,
+            stream_mode="values",
         )
+
+        print(f"arun_turn result: {result}")
+        role_by_message_type = {
+            "human": "user",
+            "ai": "assistant",
+            "system": "system",
+            "developer": "system",
+            "tool": "assistant",
+            "function": "assistant",
+        }
+        messages = []
+        for graph_message in result["messages"]:
+            try:
+                role = role_by_message_type[graph_message.type]
+            except KeyError as error:
+                raise ValueError(
+                    f"Unsupported graph message type: {graph_message.type}"
+                ) from error
+            messages.append({"role": role, "content": graph_message.content})
+        return messages
 
     def _build_sidekick_graph(self) -> CompiledStateGraph:
         if self.message_type_analyzer is None:
